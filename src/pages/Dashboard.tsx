@@ -1,3 +1,4 @@
+// src/pages/Dashboard.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useNavigate } from "react-router-dom";
@@ -25,6 +26,8 @@ type ExpenseCategory =
 
 type TxCategory = IncomeCategory | ExpenseCategory;
 
+type ThemeName = "dark" | "light" | "cyber" | "pastel";
+
 interface Transaction {
   id: string;
   user_id: string;
@@ -33,7 +36,7 @@ interface Transaction {
   amount: number;
   note: string | null;
   date: string; // yyyy-mm-dd
-  created_at?: string;
+  created_at: string;
 }
 
 interface FormState {
@@ -44,102 +47,123 @@ interface FormState {
   date: string;
 }
 
-type HistoryFilterMode = "all" | "today" | "range";
+type HistoryFilter = "all" | "today" | "week" | "month";
 
-export default function Dashboard() {
+interface DashboardProps {
+  // Biar aman kalau App.tsx sudah pernah ngirim theme, sifatnya opsional
+  theme?: ThemeName;
+  setTheme?: (t: ThemeName) => void;
+}
+
+export default function Dashboard({ theme, setTheme }: DashboardProps) {
   const navigate = useNavigate();
 
   const [user, setUser] = useState<any>(null);
   const [loadingUser, setLoadingUser] = useState(true);
 
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loadingTx, setLoadingTx] = useState(true);
+  const [saving, setSaving] = useState(false);
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loadingTx, setLoadingTx] = useState(false);
-  const [savingTx, setSavingTx] = useState(false);
-
-  const [form, setForm] = useState<FormState>(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    return {
-      type: "expense",
-      category: "Makanan",
-      amount: "",
-      note: "",
-      date: today,
-    };
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState<FormState>({
+    type: "expense",
+    category: "Makanan",
+    amount: "",
+    note: "",
+    date: todayStr,
   });
 
-  const [historyFilterMode, setHistoryFilterMode] =
-    useState<HistoryFilterMode>("all");
-  const [historyStart, setHistoryStart] = useState<string>("");
-  const [historyEnd, setHistoryEnd] = useState<string>("");
+  const [historyFilter, setHistoryFilter] =
+    useState<HistoryFilter>("all");
 
-  // ===== AUTH =====
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data, error }) => {
-      if (error) {
-        console.error(error);
-      }
-      if (!data.user) {
-        navigate("/login");
-      } else {
-        setUser(data.user);
-      }
-      setLoadingUser(false);
-    });
-  }, [navigate]);
+  // === THEME HANDLING (fallback di dalam Dashboard) ===
+  const [internalTheme, setInternalTheme] =
+    useState<ThemeName>("dark");
+  const activeTheme = theme ?? internalTheme;
 
-  // ===== LOAD TRANSAKSI DARI SUPABASE =====
-  const loadTransactions = async (currentUser: any) => {
-    setLoadingTx(true);
-    const { data, error } = await supabase
-      .from("transactions")
-      .select("*")
-      .eq("user_id", currentUser.id)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
+  const applyTheme = (t: ThemeName) => {
+    const root = document.documentElement;
+    root.setAttribute("data-theme", t);
 
-    if (error) {
-      console.error("Gagal load transaksi:", error);
-      alert("Gagal memuat transaksi dari server.");
-    } else {
-      setTransactions((data || []) as Transaction[]);
-    }
-    setLoadingTx(false);
+    document.body.classList.remove(
+      "theme-dark",
+      "theme-light",
+      "theme-cyber",
+      "theme-pastel"
+    );
+    document.body.classList.add(`theme-${t}`);
   };
 
   useEffect(() => {
-    if (user) {
-      loadTransactions(user);
-    }
-  }, [user]);
+    applyTheme(activeTheme);
+  }, [activeTheme]);
 
-  // ===== LOGOUT =====
+  const handleChangeTheme = (value: ThemeName) => {
+    if (setTheme) {
+      setTheme(value);
+    } else {
+      setInternalTheme(value);
+    }
+  };
+
+  // ============ AUTH & LOAD TRANSAKSI ============
+
+  useEffect(() => {
+    const boot = async () => {
+      const { data, error } = await supabase.auth.getUser();
+      if (error || !data.user) {
+        navigate("/login");
+        return;
+      }
+
+      setUser(data.user);
+      setLoadingUser(false);
+
+      const { data: txData, error: txError } = await supabase
+        .from("transactions")
+        .select("*")
+        .eq("user_id", data.user.id)
+        .order("date", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (txError) {
+        console.error("Gagal load transaksi:", txError.message);
+      } else if (txData) {
+        setTransactions(txData as Transaction[]);
+      }
+      setLoadingTx(false);
+    };
+
+    boot();
+  }, [navigate]);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/login");
   };
 
-  // ===== FORM HANDLER =====
+  // ============ FORM HANDLER ============
+
   const handleFormChange = (field: keyof FormState, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) {
-      alert("Sesi login berakhir. Silakan login ulang.");
-      return;
-    }
+    if (!user) return;
 
-    const nominal = Number(form.amount.replace(",", "."));
+    const nominal = Number(
+      form.amount.replace(".", "").replace(",", ".")
+    );
     if (!nominal || nominal <= 0) {
       alert("Nominal harus lebih dari 0");
       return;
     }
 
-    setSavingTx(true);
-
+    setSaving(true);
     const payload = {
       user_id: user.id,
       type: form.type,
@@ -155,28 +179,31 @@ export default function Dashboard() {
       .select()
       .single();
 
-    setSavingTx(false);
+    setSaving(false);
 
     if (error) {
-      console.error("Gagal menyimpan transaksi:", error);
-      alert("Gagal menyimpan transaksi ke server.");
+      console.error("Gagal simpan transaksi:", error.message);
+      alert("Gagal menyimpan transaksi. Coba lagi.");
       return;
     }
 
-    if (data) {
-      setTransactions((prev) => [data as Transaction, ...prev]);
-      setForm((prev) => ({ ...prev, amount: "", note: "" }));
-    }
+    setTransactions((prev) => [data as Transaction, ...prev]);
+    setForm((prev) => ({ ...prev, amount: "", note: "" }));
   };
 
   const handleDelete = async (id: string) => {
+    if (!user) return;
     if (!confirm("Hapus transaksi ini?")) return;
 
-    const { error } = await supabase.from("transactions").delete().eq("id", id);
+    const { error } = await supabase
+      .from("transactions")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user.id);
 
     if (error) {
-      console.error("Gagal hapus transaksi:", error);
-      alert("Gagal menghapus transaksi di server.");
+      console.error("Gagal hapus transaksi:", error.message);
+      alert("Gagal menghapus transaksi. Coba lagi.");
       return;
     }
 
@@ -190,7 +217,8 @@ export default function Dashboard() {
       minimumFractionDigits: 0,
     }).format(amount);
 
-  // ===== STATISTIK & CHART =====
+  // ============ STATISTIK & CHART ============
+
   const stats = useMemo(() => {
     const today = new Date();
     const todayKey = today.toISOString().slice(0, 10);
@@ -198,7 +226,11 @@ export default function Dashboard() {
     const weekStart = new Date();
     weekStart.setDate(today.getDate() - 6);
 
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const monthStart = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      1
+    );
 
     let totalIncome = 0,
       totalExpense = 0;
@@ -210,7 +242,6 @@ export default function Dashboard() {
       monthExpense = 0;
 
     const dailyMap: Record<string, number> = {};
-
     for (let i = 0; i < 7; i++) {
       const d = new Date();
       d.setDate(today.getDate() - (6 - i));
@@ -248,11 +279,13 @@ export default function Dashboard() {
     }
 
     const dayNames = ["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"];
-    const dailySeries = Object.entries(dailyMap).map(([dateKey, net]) => {
-      const d = new Date(dateKey);
-      const label = dayNames[d.getDay()];
-      return { dateKey, label, net };
-    });
+    const dailySeries = Object.entries(dailyMap).map(
+      ([dateKey, net]) => {
+        const d = new Date(dateKey);
+        const label = dayNames[d.getDay()];
+        return { dateKey, label, net };
+      }
+    );
 
     const maxAbs = dailySeries.reduce(
       (m, d) => Math.max(m, Math.abs(d.net)),
@@ -274,27 +307,44 @@ export default function Dashboard() {
       monthNet: monthIncome - monthExpense,
       dailySeries,
       maxAbs,
-      todayKey,
     };
   }, [transactions]);
 
-  // ===== HISTORY FILTER =====
-  const visibleTransactions = useMemo(() => {
-    if (historyFilterMode === "all") return transactions;
+  // ============ FILTER HISTORI ============
 
-    if (historyFilterMode === "today") {
-      return transactions.filter((tx) => tx.date === stats.todayKey);
+  const filteredTransactions = useMemo(() => {
+    if (historyFilter === "all") return transactions;
+
+    const today = new Date();
+    const todayKey = today.toISOString().slice(0, 10);
+
+    if (historyFilter === "today") {
+      return transactions.filter((tx) => tx.date === todayKey);
     }
 
-    // range
-    if (!historyStart && !historyEnd) return transactions;
+    if (historyFilter === "week") {
+      const weekStart = new Date();
+      weekStart.setDate(today.getDate() - 6);
+      return transactions.filter((tx) => {
+        const d = new Date(tx.date);
+        return d >= weekStart && d <= today;
+      });
+    }
 
-    return transactions.filter((tx) => {
-      if (historyStart && tx.date < historyStart) return false;
-      if (historyEnd && tx.date > historyEnd) return false;
-      return true;
-    });
-  }, [transactions, historyFilterMode, historyStart, historyEnd, stats.todayKey]);
+    if (historyFilter === "month") {
+      const monthStart = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        1
+      );
+      return transactions.filter((tx) => {
+        const d = new Date(tx.date);
+        return d >= monthStart && d <= today;
+      });
+    }
+
+    return transactions;
+  }, [transactions, historyFilter]);
 
   if (loadingUser) {
     return <div className="dashboard-loading">Memuat...</div>;
@@ -305,15 +355,11 @@ export default function Dashboard() {
     user?.email?.split("@")[0] ||
     "User";
 
-  const todayLabel = new Date(stats.todayKey).toLocaleDateString("id-ID", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-  });
+  // ============ RENDER ============
 
   return (
     <div className="shell-root">
-      {/* SIDEBAR */}
+      {/* SIDEBAR (desktop) */}
       <aside className={`shell-sidebar ${sidebarOpen ? "" : "collapsed"}`}>
         <div className="sidebar-header">
           <div className="sidebar-logo">₿</div>
@@ -356,17 +402,24 @@ export default function Dashboard() {
 
       {/* MAIN */}
       <div className="shell-main">
+        {/* HEADER – Logout SELALU ADA (PC & HP) */}
         <header className="dashboard-header">
-          <div>
+          <div className="dashboard-header-left">
             <h1 className="dashboard-title">Ringkasan Keuangan</h1>
             <p className="dashboard-subtitle">
               Pantau pemasukan & pengeluaran kamu per hari, minggu, dan bulan.
             </p>
           </div>
+
+          <div className="dashboard-header-right">
+            <button className="outline-btn" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         </header>
 
         <main className="dashboard-main">
-          {/* KARTU RINGKASAN */}
+          {/* SUMMARY CARDS */}
           <section className="summary-grid">
             <div className="summary-card summary-balance">
               <div className="summary-label">Total Keseluruhan</div>
@@ -381,7 +434,13 @@ export default function Dashboard() {
 
             <div className="summary-card">
               <div className="summary-label">
-                Hari Ini <span style={{ fontSize: 11 }}>({todayLabel})</span>
+                Hari Ini (
+                {new Date().toLocaleDateString("id-ID", {
+                  day: "2-digit",
+                  month: "long",
+                  year: "numeric",
+                })}
+                )
               </div>
               <div
                 className={
@@ -430,7 +489,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* GRID BAWAH: FORM + CHART + LIST */}
+          {/* GRID BAWAH */}
           <section className="bottom-grid">
             {/* FORM */}
             <div className="card-panel glass">
@@ -537,14 +596,14 @@ export default function Dashboard() {
                 <button
                   type="submit"
                   className="primary-btn"
-                  disabled={savingTx}
+                  disabled={saving}
                 >
-                  {savingTx ? "Menyimpan..." : "Simpan Transaksi"}
+                  {saving ? "Menyimpan..." : "Simpan Transaksi"}
                 </button>
               </form>
             </div>
 
-            {/* CHART + LIST */}
+            {/* CHART + HISTORI */}
             <div className="card-panel glass">
               <h2 className="panel-title">Grafik 7 Hari Terakhir</h2>
               <p className="panel-subtitle">
@@ -578,60 +637,31 @@ export default function Dashboard() {
               <h3 className="panel-title" style={{ marginTop: 18 }}>
                 Histori Transaksi
               </h3>
-
-              {/* Filter Histori */}
-              <div
-                className="tx-form-row"
-                style={{ marginBottom: 8, alignItems: "flex-end" }}
-              >
-                <div className="tx-field">
-                  <label className="field-label">Filter</label>
-                  <select
-                    className="field-input"
-                    value={historyFilterMode}
-                    onChange={(e) =>
-                      setHistoryFilterMode(e.target.value as HistoryFilterMode)
-                    }
-                  >
-                    <option value="all">Semua</option>
-                    <option value="today">Hari Ini</option>
-                    <option value="range">Rentang Tanggal</option>
-                  </select>
-                </div>
-
-                {historyFilterMode === "range" && (
-                  <>
-                    <div className="tx-field">
-                      <label className="field-label">Dari</label>
-                      <input
-                        type="date"
-                        className="field-input"
-                        value={historyStart}
-                        onChange={(e) => setHistoryStart(e.target.value)}
-                      />
-                    </div>
-                    <div className="tx-field">
-                      <label className="field-label">Sampai</label>
-                      <input
-                        type="date"
-                        className="field-input"
-                        value={historyEnd}
-                        onChange={(e) => setHistoryEnd(e.target.value)}
-                      />
-                    </div>
-                  </>
-                )}
+              <div className="history-filter-row">
+                <span className="history-filter-label">Filter</span>
+                <select
+                  className="field-input history-filter-select"
+                  value={historyFilter}
+                  onChange={(e) =>
+                    setHistoryFilter(e.target.value as HistoryFilter)
+                  }
+                >
+                  <option value="all">Semua</option>
+                  <option value="today">Hari ini</option>
+                  <option value="week">7 hari terakhir</option>
+                  <option value="month">Bulan ini</option>
+                </select>
               </div>
 
               {loadingTx ? (
                 <p className="empty-text">Memuat transaksi...</p>
-              ) : visibleTransactions.length === 0 ? (
+              ) : filteredTransactions.length === 0 ? (
                 <p className="empty-text">
                   Belum ada transaksi pada filter ini.
                 </p>
               ) : (
                 <div className="tx-list">
-                  {visibleTransactions.map((tx) => (
+                  {filteredTransactions.map((tx) => (
                     <div key={tx.id} className="tx-item">
                       <div className="tx-main">
                         <div className="tx-top-row">
@@ -676,6 +706,29 @@ export default function Dashboard() {
             </div>
           </section>
         </main>
+
+        {/* FOOTER: WATERMARK + THEME PICKER */}
+        <footer className="app-footer">
+          <div className="watermark">
+            Made with <span>MGiyas</span>
+          </div>
+
+          <div className="theme-switcher">
+            <span className="theme-switcher-label">Tema:</span>
+            <select
+              className="theme-switcher-select"
+              value={activeTheme}
+              onChange={(e) =>
+                handleChangeTheme(e.target.value as ThemeName)
+              }
+            >
+              <option value="dark">Gelap</option>
+              <option value="light">Cerah</option>
+              <option value="cyber">Cyber</option>
+              <option value="pastel">Pastel</option>
+            </select>
+          </div>
+        </footer>
       </div>
     </div>
   );
