@@ -1,144 +1,62 @@
-import { useState } from "react";
-import { supabase } from "./supabaseClient";
+import { useEffect, useState } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import Forgot from "./pages/Forgot";
+import ResetPassword from "./pages/ResetPassword";
+import Dashboard from "./pages/Dashboard";
 
-function App() {
-  const [fullName, setFullName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
+type Theme = "dark" | "light" | "cyber" | "pastel";
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-
-    // ✅ BERSIHKAN INPUT DULU
-    const cleanName = fullName.trim();
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = password; // kalau mau bisa juga password.trim()
-
-    const { data, error } = await supabase.auth.signUp({
-      email: cleanEmail,
-      password: cleanPassword,
-      options: {
-        data: { full_name: cleanName },
-        emailRedirectTo: "http://localhost:5173/",
-      },
-    });
-
-    setLoading(false);
-
-    if (error) {
-      alert("Gagal daftar: " + error.message);
-      console.error("SUPABASE ERROR:", error);
-    } else {
-      alert("Akun berhasil dibuat!");
-      console.log("DATA:", data);
-
-      // optional: kosongkan form setelah sukses
-      setFullName("");
-      setEmail("");
-      setPassword("");
-    }
-  };
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0f172a",
-        color: "white",
-      }}
-    >
-      <form
-        onSubmit={handleRegister}
-        style={{
-          width: 350,
-          padding: 20,
-          borderRadius: 12,
-          background: "#1e293b",
-          border: "1px solid #334155",
-        }}
-      >
-        <h2 style={{ marginBottom: 12 }}>Register User</h2>
-
-        <div style={{ marginBottom: 12 }}>
-          <label>Nama Lengkap</label>
-          <input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            style={{
-              width: "100%",
-              padding: 6,
-              marginTop: 4,
-              borderRadius: 6,
-              border: "1px solid #334155",
-              background: "#0f172a",
-              color: "white",
-            }}
-            required
-          />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label>Email</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{
-              width: "100%",
-              padding: 6,
-              marginTop: 4,
-              borderRadius: 6,
-              border: "1px solid #334155",
-              background: "#0f172a",
-              color: "white",
-            }}
-            required
-          />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{
-              width: "100%",
-              padding: 6,
-              marginTop: 4,
-              borderRadius: 6,
-              border: "1px solid #334155",
-              background: "#0f172a",
-              color: "white",
-            }}
-            required
-            minLength={6}
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          style={{
-            width: "100%",
-            padding: 8,
-            borderRadius: 6,
-            border: "none",
-            background: loading ? "#166534" : "#22c55e",
-            fontWeight: 700,
-            cursor: loading ? "default" : "pointer",
-          }}
-        >
-          {loading ? "Mendaftar..." : "Daftar"}
-        </button>
-      </form>
-    </div>
-  );
+function getInitialTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  const stored = window.localStorage.getItem("mt-theme") as Theme | null;
+  if (stored === "dark" || stored === "light" || stored === "cyber" || stored === "pastel") {
+    return stored;
+  }
+  return "dark";
 }
 
-export default App;
+export default function App() {
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+
+  useEffect(() => {
+    document.body.setAttribute("data-theme", theme);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("mt-theme", theme);
+    }
+  }, [theme]);
+
+  return (
+    <>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/forgot" element={<Forgot />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+
+      {/* Theme switcher kanan bawah */}
+      <div className="theme-switcher">
+        <span className="theme-switcher-label">Tema:</span>
+        <select
+          className="theme-switcher-select"
+          value={theme}
+          onChange={(e) => setTheme(e.target.value as Theme)}
+        >
+          <option value="dark">Gelap</option>
+          <option value="light">Cerah</option>
+          <option value="cyber">Cyber</option>
+          <option value="pastel">Pastel</option>
+        </select>
+      </div>
+
+      {/* Watermark kiri bawah */}
+      <div className="app-watermark">
+        Made with <span>MGiyas</span>
+      </div>
+    </>
+  );
+}

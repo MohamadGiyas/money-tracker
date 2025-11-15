@@ -1,4 +1,3 @@
-// src/pages/Dashboard.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useNavigate } from "react-router-dom";
@@ -28,11 +27,13 @@ type TxCategory = IncomeCategory | ExpenseCategory;
 
 interface Transaction {
   id: string;
+  user_id: string;
   type: TxType;
   category: TxCategory;
   amount: number;
-  note: string;
+  note: string | null;
   date: string; // yyyy-mm-dd
+  created_at?: string;
 }
 
 interface FormState {
@@ -43,14 +44,20 @@ interface FormState {
   date: string;
 }
 
+type HistoryFilterMode = "all" | "today" | "range";
+
 export default function Dashboard() {
   const navigate = useNavigate();
 
   const [user, setUser] = useState<any>(null);
   const [loadingUser, setLoadingUser] = useState(true);
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loadingTx, setLoadingTx] = useState(false);
+  const [savingTx, setSavingTx] = useState(false);
+
   const [form, setForm] = useState<FormState>(() => {
     const today = new Date().toISOString().slice(0, 10);
     return {
@@ -62,23 +69,17 @@ export default function Dashboard() {
     };
   });
 
-  // THEME STATE (dark / light)
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [historyFilterMode, setHistoryFilterMode] =
+    useState<HistoryFilterMode>("all");
+  const [historyStart, setHistoryStart] = useState<string>("");
+  const [historyEnd, setHistoryEnd] = useState<string>("");
 
-  // Filter histori: mode + tanggal
-  const [historyMode, setHistoryMode] = useState<"all" | "range">("all");
-  const [historyStart, setHistoryStart] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 6); // default 7 hari terakhir
-    return d.toISOString().slice(0, 10);
-  });
-  const [historyEnd, setHistoryEnd] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-
-  // ------------ AUTH ------------
+  // ===== AUTH =====
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (error) {
+        console.error(error);
+      }
       if (!data.user) {
         navigate("/login");
       } else {
@@ -88,85 +89,97 @@ export default function Dashboard() {
     });
   }, [navigate]);
 
-  const storageKey = useMemo(
-    () => (user ? `money-tracker:${user.id}` : null),
-    [user]
-  );
+  // ===== LOAD TRANSAKSI DARI SUPABASE =====
+  const loadTransactions = async (currentUser: any) => {
+    setLoadingTx(true);
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("*")
+      .eq("user_id", currentUser.id)
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false });
 
-  // ------------ LOAD / SAVE LOCALSTORAGE (TRANSAKSI) ------------
-  useEffect(() => {
-    if (!storageKey) return;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) setTransactions(JSON.parse(raw));
-    } catch (e) {
-      console.error("Gagal load transaksi:", e);
+    if (error) {
+      console.error("Gagal load transaksi:", error);
+      alert("Gagal memuat transaksi dari server.");
+    } else {
+      setTransactions((data || []) as Transaction[]);
     }
-  }, [storageKey]);
-
-  useEffect(() => {
-    if (!storageKey) return;
-    localStorage.setItem(storageKey, JSON.stringify(transactions));
-  }, [transactions, storageKey]);
-
-  // ------------ THEME: LOAD & APPLY ------------
-  useEffect(() => {
-    // load theme dari localStorage
-    const saved = localStorage.getItem("money-theme");
-    if (saved === "light" || saved === "dark") {
-      setTheme(saved);
-    }
-  }, []);
-
-  useEffect(() => {
-    // apply ke <body> sebagai class
-    if (typeof document !== "undefined") {
-      document.body.classList.toggle("theme-light", theme === "light");
-      localStorage.setItem("money-theme", theme);
-    }
-  }, [theme]);
-
-  const handleThemeToggle = () => {
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+    setLoadingTx(false);
   };
 
-  // ------------ HELPERS ------------
+  useEffect(() => {
+    if (user) {
+      loadTransactions(user);
+    }
+  }, [user]);
 
+  // ===== LOGOUT =====
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/login");
   };
 
+  // ===== FORM HANDLER =====
   const handleFormChange = (field: keyof FormState, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handleAddTransaction = (e: React.FormEvent) => {
+  const handleAddTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) {
+      alert("Sesi login berakhir. Silakan login ulang.");
+      return;
+    }
+
     const nominal = Number(form.amount.replace(",", "."));
     if (!nominal || nominal <= 0) {
       alert("Nominal harus lebih dari 0");
       return;
     }
 
-    const newTx: Transaction = {
-      id:
-        typeof crypto !== "undefined" && crypto.randomUUID
-          ? crypto.randomUUID()
-          : Math.random().toString(36).slice(2),
+    setSavingTx(true);
+
+    const payload = {
+      user_id: user.id,
       type: form.type,
       category: form.category,
       amount: nominal,
-      note: form.note.trim(),
+      note: form.note.trim() || null,
       date: form.date,
     };
 
-    setTransactions((prev) => [newTx, ...prev]);
-    setForm((prev) => ({ ...prev, amount: "", note: "" }));
+    const { data, error } = await supabase
+      .from("transactions")
+      .insert(payload)
+      .select()
+      .single();
+
+    setSavingTx(false);
+
+    if (error) {
+      console.error("Gagal menyimpan transaksi:", error);
+      alert("Gagal menyimpan transaksi ke server.");
+      return;
+    }
+
+    if (data) {
+      setTransactions((prev) => [data as Transaction, ...prev]);
+      setForm((prev) => ({ ...prev, amount: "", note: "" }));
+    }
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!confirm("Hapus transaksi ini?")) return;
+
+    const { error } = await supabase.from("transactions").delete().eq("id", id);
+
+    if (error) {
+      console.error("Gagal hapus transaksi:", error);
+      alert("Gagal menghapus transaksi di server.");
+      return;
+    }
+
     setTransactions((prev) => prev.filter((tx) => tx.id !== id));
   };
 
@@ -177,13 +190,13 @@ export default function Dashboard() {
       minimumFractionDigits: 0,
     }).format(amount);
 
-  // ------ HITUNG STATISTIK & DATA CHART + INFO HARI INI ------
+  // ===== STATISTIK & CHART =====
   const stats = useMemo(() => {
     const today = new Date();
     const todayKey = today.toISOString().slice(0, 10);
 
     const weekStart = new Date();
-    weekStart.setDate(today.getDate() - 6); // 7 hari terakhir
+    weekStart.setDate(today.getDate() - 6);
 
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
@@ -196,7 +209,6 @@ export default function Dashboard() {
     let monthIncome = 0,
       monthExpense = 0;
 
-    // untuk chart 7 hari terakhir
     const dailyMap: Record<string, number> = {};
 
     for (let i = 0; i < 7; i++) {
@@ -205,9 +217,6 @@ export default function Dashboard() {
       const key = d.toISOString().slice(0, 10);
       dailyMap[key] = 0;
     }
-
-    const todayIncomeCats: string[] = [];
-    const todayExpenseCats: string[] = [];
 
     for (const tx of transactions) {
       const amt = tx.amount;
@@ -218,13 +227,8 @@ export default function Dashboard() {
       else totalExpense += amt;
 
       if (tx.date === todayKey) {
-        if (isIncome) {
-          dayIncome += amt;
-          todayIncomeCats.push(tx.category);
-        } else {
-          dayExpense += amt;
-          todayExpenseCats.push(tx.category);
-        }
+        if (isIncome) dayIncome += amt;
+        else dayExpense += amt;
       }
 
       if (d >= weekStart && d <= today) {
@@ -255,13 +259,6 @@ export default function Dashboard() {
       0
     );
 
-    const uniq = (arr: string[]) => Array.from(new Set(arr));
-    const joinCats = (arr: string[]) =>
-      arr.length === 0 ? "-" : uniq(arr).slice(0, 3).join(", ");
-
-    const todayIncomeText = joinCats(todayIncomeCats);
-    const todayExpenseText = joinCats(todayExpenseCats);
-
     return {
       totalIncome,
       totalExpense,
@@ -277,37 +274,27 @@ export default function Dashboard() {
       monthNet: monthIncome - monthExpense,
       dailySeries,
       maxAbs,
-      todayIncomeText,
-      todayExpenseText,
       todayKey,
     };
   }, [transactions]);
 
-  // ------ FILTER HISTORI BERDASARKAN MODE & TANGGAL ------
-  const filteredTransactions = useMemo(() => {
-    if (historyMode === "all") return transactions;
+  // ===== HISTORY FILTER =====
+  const visibleTransactions = useMemo(() => {
+    if (historyFilterMode === "all") return transactions;
 
-    let list = [...transactions];
-
-    let start: Date | null = historyStart ? new Date(historyStart) : null;
-    let end: Date | null = historyEnd ? new Date(historyEnd) : null;
-
-    if (end) {
-      // supaya inclusive sampai akhir hari
-      end.setHours(23, 59, 59, 999);
+    if (historyFilterMode === "today") {
+      return transactions.filter((tx) => tx.date === stats.todayKey);
     }
 
-    if (!start && !end) return list;
+    // range
+    if (!historyStart && !historyEnd) return transactions;
 
-    list = list.filter((tx) => {
-      const d = new Date(tx.date);
-      if (start && d < start) return false;
-      if (end && d > end) return false;
+    return transactions.filter((tx) => {
+      if (historyStart && tx.date < historyStart) return false;
+      if (historyEnd && tx.date > historyEnd) return false;
       return true;
     });
-
-    return list;
-  }, [transactions, historyMode, historyStart, historyEnd]);
+  }, [transactions, historyFilterMode, historyStart, historyEnd, stats.todayKey]);
 
   if (loadingUser) {
     return <div className="dashboard-loading">Memuat...</div>;
@@ -318,14 +305,12 @@ export default function Dashboard() {
     user?.email?.split("@")[0] ||
     "User";
 
-  const todayDateLabel = new Date(stats.todayKey).toLocaleDateString("id-ID", {
-    weekday: "long",
+  const todayLabel = new Date(stats.todayKey).toLocaleDateString("id-ID", {
     day: "2-digit",
-    month: "short",
+    month: "long",
     year: "numeric",
   });
 
-  // ------------ RENDER ------------
   return (
     <div className="shell-root">
       {/* SIDEBAR */}
@@ -362,10 +347,7 @@ export default function Dashboard() {
 
         {sidebarOpen && (
           <div className="sidebar-footer">
-            <button
-              className="outline-btn small"
-              onClick={handleLogout}
-            >
+            <button className="outline-btn small" onClick={handleLogout}>
               Logout
             </button>
           </div>
@@ -380,20 +362,6 @@ export default function Dashboard() {
             <p className="dashboard-subtitle">
               Pantau pemasukan & pengeluaran kamu per hari, minggu, dan bulan.
             </p>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              className="outline-btn"
-              type="button"
-              onClick={handleThemeToggle}
-            >
-              {theme === "dark" ? "Tema Cerah" : "Tema Gelap"}
-            </button>
-            {!sidebarOpen && (
-              <button className="outline-btn" onClick={handleLogout}>
-                Logout
-              </button>
-            )}
           </div>
         </header>
 
@@ -413,8 +381,7 @@ export default function Dashboard() {
 
             <div className="summary-card">
               <div className="summary-label">
-                Hari Ini
-                <span className="summary-date"> • {todayDateLabel}</span>
+                Hari Ini <span style={{ fontSize: 11 }}>({todayLabel})</span>
               </div>
               <div
                 className={
@@ -424,9 +391,9 @@ export default function Dashboard() {
               >
                 {formatCurrency(stats.dayNet)}
               </div>
-              <div className="summary-caption subtle">
-                Pemasukan: {stats.todayIncomeText} • Pengeluaran:{" "}
-                {stats.todayExpenseText}
+              <div className="summary-caption">
+                +{formatCurrency(stats.dayIncome)} / -
+                {formatCurrency(stats.dayExpense)}
               </div>
             </div>
 
@@ -469,7 +436,8 @@ export default function Dashboard() {
             <div className="card-panel glass">
               <h2 className="panel-title">Catat Transaksi</h2>
               <p className="panel-subtitle">
-                Input pemasukan atau pengeluaran harian kamu.
+                Input pemasukan atau pengeluaran harian kamu. Data disimpan di
+                Supabase dan bisa diakses dari device lain.
               </p>
 
               <form className="tx-form" onSubmit={handleAddTransaction}>
@@ -566,8 +534,12 @@ export default function Dashboard() {
                   />
                 </div>
 
-                <button type="submit" className="primary-btn">
-                  Simpan Transaksi
+                <button
+                  type="submit"
+                  className="primary-btn"
+                  disabled={savingTx}
+                >
+                  {savingTx ? "Menyimpan..." : "Simpan Transaksi"}
                 </button>
               </form>
             </div>
@@ -576,7 +548,7 @@ export default function Dashboard() {
             <div className="card-panel glass">
               <h2 className="panel-title">Grafik 7 Hari Terakhir</h2>
               <p className="panel-subtitle">
-                Batang hijau = plus, merah = minus. Berdasarkan saldo harian.
+                Batang hijau = saldo harian positif, merah = minus.
               </p>
 
               <div className="chart-wrapper">
@@ -603,57 +575,63 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* HEADER + FILTER HISTORI */}
-              <div className="history-header">
-                <div>
-                  <h3 className="panel-title" style={{ marginTop: 18 }}>
-                    Histori Transaksi
-                  </h3>
-                  <p className="panel-subtitle">
-                    Terbaru ada di paling atas. Data disimpan di browser kamu.
-                  </p>
-                </div>
+              <h3 className="panel-title" style={{ marginTop: 18 }}>
+                Histori Transaksi
+              </h3>
 
-                <div className="history-filter-row">
+              {/* Filter Histori */}
+              <div
+                className="tx-form-row"
+                style={{ marginBottom: 8, alignItems: "flex-end" }}
+              >
+                <div className="tx-field">
+                  <label className="field-label">Filter</label>
                   <select
                     className="field-input"
-                    style={{ width: "auto", minWidth: 120 }}
-                    value={historyMode}
+                    value={historyFilterMode}
                     onChange={(e) =>
-                      setHistoryMode(e.target.value as "all" | "range")
+                      setHistoryFilterMode(e.target.value as HistoryFilterMode)
                     }
                   >
                     <option value="all">Semua</option>
-                    <option value="range">Rentang tanggal</option>
+                    <option value="today">Hari Ini</option>
+                    <option value="range">Rentang Tanggal</option>
                   </select>
+                </div>
 
-                  {historyMode === "range" && (
-                    <>
+                {historyFilterMode === "range" && (
+                  <>
+                    <div className="tx-field">
+                      <label className="field-label">Dari</label>
                       <input
                         type="date"
                         className="field-input"
                         value={historyStart}
                         onChange={(e) => setHistoryStart(e.target.value)}
                       />
-                      <span className="history-filter-sep">sampai</span>
+                    </div>
+                    <div className="tx-field">
+                      <label className="field-label">Sampai</label>
                       <input
                         type="date"
                         className="field-input"
                         value={historyEnd}
                         onChange={(e) => setHistoryEnd(e.target.value)}
                       />
-                    </>
-                  )}
-                </div>
+                    </div>
+                  </>
+                )}
               </div>
 
-              {filteredTransactions.length === 0 ? (
+              {loadingTx ? (
+                <p className="empty-text">Memuat transaksi...</p>
+              ) : visibleTransactions.length === 0 ? (
                 <p className="empty-text">
-                  Belum ada transaksi pada periode ini.
+                  Belum ada transaksi pada filter ini.
                 </p>
               ) : (
                 <div className="tx-list">
-                  {filteredTransactions.map((tx) => (
+                  {visibleTransactions.map((tx) => (
                     <div key={tx.id} className="tx-item">
                       <div className="tx-main">
                         <div className="tx-top-row">
